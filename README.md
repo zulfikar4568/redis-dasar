@@ -323,3 +323,195 @@ Pada redis container kita implementasi `protected-mode yes` artinya semua interf
  ping 
  # (error) DENIED Redis is running in protected mode because protected mode is enabled, no bind address was specified, no authentication password is requested to clients. In this mode connections are only accepted from the loopback interface. If you want to connect from external computers to Redis you may adopt one of the following solutions: 1) Just disable protected mode sending the command 'CONFIG SET protected-mode no' from the loopback interface by connecting to Redis from the same host the server is running, however MAKE SURE Redis is not publicly accessible from internet if you do so. Use CONFIG REWRITE to make this change permanent. 2) Alternatively you can just disable the protected mode by editing the Redis configuration file, and setting the protected mode option to 'no', and then restarting the server. 3) If you started the server manually just for testing, restart it with the '--protected-mode no' option. 4) Setup a bind address or an authentication password. NOTE: You only need to do one of the above things in order for the server to start accepting connections from the outside.
 ```
+
+# Authentication
+
+- Authentication adalah proses verifikasi identitas untuk memastikan bahwa yang mengakses adalah identitas yang benar
+- Redis memiliki fitur authentication, dan kita bisa menambahkannya di file konfigurasi di server redis
+- Namun perlu diingat, proses authentication di redis itu sangat cepat, jadi pastikan gunakan password sepanjang mungkin agar tidak mudah untuk di brute force 
+
+Configurasi awalnya seperti di bawah, yang artinya redis akan mendengarkan request dari semua network interface, tetapi send layer nya aktif (protected mode)
+```bash
+# bind 127.0.0.1
+protected-mode yes
+```
+
+Contoh configurasi Auth di redis
+```bash
+...# Redis ACL users are defined in the following format:
+#
+#   user <username> ... acl rules ...
+#
+# For example:
+#
+#   user worker +@list +@connection ~jobs:* on >ffa9203c493aa99
+#
+# The special username "default" is used for new connections. If this user
+# has the "nopass" rule, then new connections will be immediately authenticated
+# as the "default" user without the need of any password provided via the
+# AUTH command. Otherwise if the "default" user is not flagged with "nopass" ...
+```
+
+Tambahkan di config redis
+```bash
+user zulfikar on +@all >zulfikarpassword
+```
+```bash
+# Terminal 1
+docker exec -it redis /bin/sh
+redis-cli -h localhost
+```
+
+```bash
+#Terminal 2
+docker exec -it redis-client /bin/sh
+redis-cli -h redis
+auth zulfikar zulfikarpassword
+# Maka akan tetap denied
+```
+
+Tambahkan config di redis
+```bash
+user default on +@connection
+user zulfikar on +@all >zulfikarpassword
+```
+Lalu ping kembali
+```bash
+docker exec -it redis-client /bin/sh
+redis-cli -h redis
+ping
+#response => (error) NOAUTH Authentication required.
+
+auth zulfikar zulfikarpassword
+ping
+# Maka akan terhubung, respose => PONG
+```
+
+# Authorization
+- Authorization adalah prose memberi hak akses terhadap identitas yang telah berhasil melewati proses authentication
+- Redis mendukung hal ini, jadi kita bisa membatasi hak akses apa saja yang bisa dilakukan oleh identitas yang kita buat
+- https://redis.io/topics/acl
+- https://redis.io/commands/acl-cat
+
+```
++ = boleh
+- = tidak boleh
+@<category>
+~ = keys
+```
+
+Melihat category
+```bash
+acl cat
+acl cat read 
+```
+
+Tambahkan di config redis
+```bash
+user default on +@connection
+user isnaen on +@read ~* >isnaenpassword
+user irpan on +@read +@set ~* >irpanpassword
+user jack on +@all -@set ~* >jackpassword # Jack bisa semua kecuali set
+user arif on +@read ~key-arif* >arifpassword
+user zulfikar on +@all ~* >zulfikarpassword
+```
+Restart Container 
+```bash
+docker exec -it redis-client /bin/sh
+redis-cli -h redis
+auth zulfikar zulfikarpassword
+
+get key # zulfikar punya akses read
+set key-zul val-zul # zulfikar punya akses write
+get key-zul # zulfikar punya akses read
+
+auth isnaen isnaenpassword
+get key # isnaen punya akses read
+set key-zul val-zul # isnaen tidak punya akses write
+
+auth isnaen arifpassword
+get key #arif tidak punya akses read key dengan nama key
+set key-arif val-arif # arif tidak punya akses write
+get key-a #arif tidak punya akses read key dengan nama key-a
+get key-arif1 # arif punya akses read key dengan key-arif1
+get key-arif2 # arif punya akses read key dengan key-arif2
+```
+
+# Persistance
+- Media penyimpanan utama redis adalah di memory
+- Namun kita bisa menyimpan data di memory redis tersebut di disk jika kita mau
+- Namun perlu diingat proses penyimpanan data ke disk redis tidak realtime, dia dilakukan secara scheduler dengan konfigurasi tertentu
+- Jadi jangan jadikan redis sebagai media penyimpanan persistence, gunakan redis sebagai database untuk membantu database persistence lainnya
+
+Contoh configuration persistance
+```bash
+################################ SNAPSHOTTING  ################################
+#
+# Save the DB on disk:
+#
+#   save <seconds> <changes>
+#
+#   Will save the DB if both the given number of seconds and the given
+#   number of write operations against the DB occurred.
+#
+#   In the example below the behavior will be to save:
+#   after 900 sec (15 min) if at least 1 key changed
+#   after 300 sec (5 min) if at least 10 keys changed
+#   after 60 sec if at least 10000 keys changed
+```
+
+Bisa menggunakan konfigurasi file atau bisa manual menggunakan command cli
+
+```bash
+# Synchronous save data to disk
+save
+# Asynchronous save data to disk
+bgsave
+```
+
+Data akan tetap utuh jika redis dimatikan
+
+# Ketika Memory Redis Penuh
+- Ketika memory redis penuh, maka redis secara default akan mereject semua request penyimpanan data
+- Hal ini mungkin menjadi masalah ketika kita hanya menggunakan redis sebagai cache untuk media penyimpanan sementara
+- Kadang akan sangat berguna jika memory penuh, redis bisa secara otomatis menghapus data yang sudah jarang digunakan
+
+
+# Eviction
+
+- Redis mendukung fitur eviction (menghapus data lama, dan menerima data baru)
+- Namun untuk mengaktifkan fitur ini, kita perlu memberi tahu redis, maximum memory yang boleh digunakan, dan bagaimana strategi untuk melakukan eviction nya
+- https://redis.io/topics/lru-cache
+
+Konfigurasi Max Memory
+```bash 
+# In short... if you have replicas attached it is suggested that you set a lower
+# limit for maxmemory so that there is some free RAM on the system for replica
+# output buffers (but this is not needed if the policy is 'noeviction').
+#
+# maxmemory <bytes>
+```
+
+Konfigurasi Memory Policy
+```bash
+# MAXMEMORY POLICY: how Redis will select what to remove when maxmemory
+# is reached. You can select one from the following behaviors:
+#
+# volatile-lru -> Evict using approximated LRU, only keys with an expire set.
+# allkeys-lru -> Evict any key using approximated LRU.
+# volatile-lfu -> Evict using approximated LFU, only keys with an expire set.
+# allkeys-lfu -> Evict any key using approximated LFU.
+# volatile-random -> Remove a random key having an expire set.
+# allkeys-random -> Remove a random key, any key.
+# volatile-ttl -> Remove the key with the nearest expire time (minor TTL)
+# noeviction -> Don't evict anything, just return an error on write operations.
+#
+# LRU means Least Recently Used
+# LFU means Least Frequently Used
+```
+
+Contoh Konfigurasi
+```bash
+maxmemory 100mb
+maxmemory-policy allkeys-lfu
+```
